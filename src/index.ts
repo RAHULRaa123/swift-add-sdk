@@ -1,6 +1,7 @@
 // Main exports
 export { Ad402Provider, useAd402Context, useAd402Config, useAd402Api } from './components/Ad402Provider';
 export { Ad402Slot } from './components/Ad402Slot';
+export { Ad402ErrorBoundary } from './components/Ad402ErrorBoundary';
 
 // Type exports
 export type {
@@ -12,10 +13,10 @@ export type {
   SlotInfo,
   QueueInfo,
   Ad402ProviderProps,
-  Ad402SlotProps,
   AdResponse,
   QueueResponse,
   Ad402Error,
+  Ad402ErrorType,
   UseAd402SlotReturn,
   Ad402ContextType
 } from './types';
@@ -35,7 +36,8 @@ export {
   createAdDataHook,
   generateSlotId,
   parseSlotConfigFromUrl,
-  trackAdEvent
+  trackAdEvent,
+  retryAsync
 } from './utils';
 
 // Default export

@@ -290,16 +290,43 @@ The SDK automatically handles responsive design:
 
 ## 🔒 Error Handling
 
-The SDK includes comprehensive error handling:
+The SDK includes comprehensive error handling built to cleanly catch and recover from failures.
+
+### Error Boundaries
+
+It's highly recommended to wrap your SDK usage or entire application in the `Ad402ErrorBoundary` to prevent API and rendering errors from crashing your app.
+
+```tsx
+import { Ad402ErrorBoundary, Ad402Slot } from 'ad402-sdk';
+
+export default function MyPage() {
+  return (
+    <Ad402ErrorBoundary
+      debug={process.env.NODE_ENV === 'development'}
+      onError={(error, info) => {
+        // Send to Sentry, Datadog, etc.
+        console.error('Caught an error:', error, info);
+      }}
+      // Optional: fallback={<CustomErrorComponent />}
+    >
+      <Ad402Slot slotId="my-slot" />
+    </Ad402ErrorBoundary>
+  );
+}
+```
+
+### Component Level Error Handling
+
+The `Ad402Slot` handles retries automatically (with exponential backoff) for network and 5xx errors. You can also listen to these errors explicitly:
 
 ```tsx
 <Ad402Slot
   slotId="error-handling-slot"
   size="banner"
   price="0.25"
-  onAdError={(error) => {
-    console.error('Ad failed to load:', error);
-    // Handle error (e.g., show fallback content)
+  onError={(error) => {
+    // Fired for specific SDK errors (e.g. NETWORK_ERROR, API_ERROR)
+    console.error('Ad failed to load:', error.type, error.message);
   }}
   errorComponent={
     <div style={{ 
@@ -309,9 +336,6 @@ The SDK includes comprehensive error handling:
       border: '1px solid #dee2e6'
     }}>
       <p>Ad temporarily unavailable</p>
-      <button onClick={() => window.location.reload()}>
-        Retry
-      </button>
     </div>
   }
 />

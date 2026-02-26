@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Ad402SlotProps, AdData, QueueInfo, Ad402Error } from '../types';
 import { useAd402Context } from './Ad402Provider';
+import { retryAsync } from '../utils';
 
 // Default slot dimensions
 const SLOT_DIMENSIONS = {
@@ -38,9 +39,10 @@ const DefaultLoadingComponent: React.FC = () => (
 );
 
 // Default error component
-const DefaultErrorComponent: React.FC<{ error: Ad402Error }> = ({ error }) => (
+const DefaultErrorComponent: React.FC<{ error: Ad402Error; onRetry?: () => void; isOffline?: boolean }> = ({ error, onRetry, isOffline }) => (
   <div style={{
     display: 'flex',
+    flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
     height: '100%',
@@ -48,9 +50,35 @@ const DefaultErrorComponent: React.FC<{ error: Ad402Error }> = ({ error }) => (
     fontSize: '10px',
     color: '#c00',
     textAlign: 'center',
-    padding: '8px'
+    padding: '8px',
+    backgroundColor: '#fff0f0',
+    border: '1px solid #ffcccc'
   }}>
-    Error: {error.message}
+    <div style={{ marginBottom: '4px', fontWeight: 'bold' }}>
+      {isOffline ? "Please check your internet connection." : "We're having trouble loading this ad."}
+    </div>
+    <div style={{ opacity: 0.8, fontSize: '8px', marginBottom: '8px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%' }}>
+      {error.message}
+    </div>
+    {onRetry && (
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onRetry();
+        }}
+        style={{
+          padding: '4px 8px',
+          fontSize: '10px',
+          backgroundColor: '#c00',
+          color: 'white',
+          border: 'none',
+          borderRadius: '4px',
+          cursor: 'pointer'
+        }}
+      >
+        Retry
+      </button>
+    )}
   </div>
 );
 
@@ -134,6 +162,7 @@ export const Ad402Slot: React.FC<Ad402SlotProps> = ({
   onSlotClick,
   onAdLoad,
   onAdError,
+  onError,
   loadingComponent,
   errorComponent,
   emptySlotComponent,
@@ -143,44 +172,96 @@ export const Ad402Slot: React.FC<Ad402SlotProps> = ({
   const [adData, setAdData] = useState<AdData | null>(null);
   const [queueInfo, setQueueInfo] = useState<QueueInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRetrying, setIsRetrying] = useState(false);
   const [error, setError] = useState<Ad402Error | null>(null);
+  const [isOffline, setIsOffline] = useState(typeof navigator !== 'undefined' ? !navigator.onLine : false);
   const slotRef = useRef<HTMLDivElement>(null);
+
+  // Network status listeners
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   // Get slot dimensions
   const slotDimensions = customDimensions || SLOT_DIMENSIONS[size as keyof typeof SLOT_DIMENSIONS];
   const fontSizes = getOptimalFontSizes(slotDimensions.width, slotDimensions.height);
 
   // Fetch ad data
-  const fetchAdData = useCallback(async () => {
+  const fetchAdData = useCallback(async (isManualRetry = false) => {
     try {
-      setIsLoading(true);
+      if (isManualRetry) {
+        setIsRetrying(true);
+      } else {
+        setIsLoading(true);
+      }
       setError(null);
 
-      const response = await fetch(`${apiBaseUrl}/api/ads/${slotId}`);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch ad data: ${response.status}`);
-      }
+      const controller = new AbortController();
+      const response = await retryAsync(
+        async () => {
+          if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            throw new Error('NETWORK_OFFLINE');
+          }
+          const res = await fetch(`${apiBaseUrl}/api/ads/${slotId}`, {
+            signal: controller.signal
+          });
+          if (!res.ok) {
+            const err = new Error(`Failed to fetch ad data: ${res.status}`);
+            (err as any).status = res.status;
+            throw err;
+          }
+          return res;
+        },
+        {
+          retries: 3,
+          delay: 500,
+          factor: 2,
+          signal: controller.signal
+        }
+      );
 
       const data = await response.json();
       setAdData(data);
-      
+
       if (data.hasAd && onAdLoad) {
         onAdLoad(data);
       }
     } catch (err) {
-      const error: Ad402Error = {
+      const isNetworkOffline = err instanceof Error && err.message === 'NETWORK_OFFLINE';
+
+      const newError: Ad402Error = {
+        type: isNetworkOffline ? 'NETWORK_ERROR' : 'API_ERROR',
         code: 'FETCH_ERROR',
-        message: err instanceof Error ? err.message : 'Failed to fetch ad data',
-        details: err
+        message: isNetworkOffline ? 'No internet connection' : (err instanceof Error ? err.message : 'Failed to fetch ad data'),
+        details: err,
+        originalError: err
       };
-      setError(error);
+
+      setError(newError);
+
       if (onAdError) {
         onAdError(err instanceof Error ? err : new Error('Failed to fetch ad data'));
       }
+
+      if (onError) {
+        onError(newError);
+      }
     } finally {
       setIsLoading(false);
+      setIsRetrying(false);
     }
-  }, [apiBaseUrl, slotId, onAdLoad, onAdError]);
+  }, [apiBaseUrl, slotId, onAdLoad, onAdError, onError]);
 
   // Fetch queue info
   const fetchQueueInfo = useCallback(async () => {
@@ -233,7 +314,7 @@ export const Ad402Slot: React.FC<Ad402SlotProps> = ({
   }, [slotId, size, price, durations, category, config.websiteId]);
 
   // Loading state
-  if (isLoading) {
+  if (isLoading || isRetrying) {
     return (
       <div
         ref={slotRef}
@@ -251,7 +332,13 @@ export const Ad402Slot: React.FC<Ad402SlotProps> = ({
           margin: '0 auto'
         }}
       >
-        {loadingComponent || <DefaultLoadingComponent />}
+        {isRetrying ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', color: '#666' }}>
+            Retrying...
+          </div>
+        ) : (
+          loadingComponent || <DefaultLoadingComponent />
+        )}
       </div>
     );
   }
@@ -275,7 +362,7 @@ export const Ad402Slot: React.FC<Ad402SlotProps> = ({
           margin: '0 auto'
         }}
       >
-        {errorComponent || <DefaultErrorComponent error={error} />}
+        {errorComponent || <DefaultErrorComponent error={error} onRetry={() => fetchAdData(true)} isOffline={isOffline} />}
       </div>
     );
   }
@@ -319,7 +406,7 @@ export const Ad402Slot: React.FC<Ad402SlotProps> = ({
             }}
           />
         </div>
-        
+
         {/* Book Next Slot Button */}
         {clickable && (
           <button
@@ -354,8 +441,8 @@ export const Ad402Slot: React.FC<Ad402SlotProps> = ({
               e.currentTarget.style.backgroundColor = config.theme?.primaryColor || '#000000';
               e.currentTarget.style.transform = 'scale(1)';
             }}
-            title={queueInfo && queueInfo.totalInQueue > 0 
-              ? `Book next slot (${queueInfo.totalInQueue} in queue)` 
+            title={queueInfo && queueInfo.totalInQueue > 0
+              ? `Book next slot (${queueInfo.totalInQueue} in queue)`
               : "Book next slot"
             }
           >
