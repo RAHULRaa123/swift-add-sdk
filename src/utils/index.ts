@@ -33,6 +33,7 @@ export const validateConfig = (config: Ad402Config): Ad402Error[] => {
 
   if (!config.websiteId) {
     errors.push({
+      type: 'UNKNOWN_ERROR',
       code: 'MISSING_WEBSITE_ID',
       message: 'websiteId is required'
     });
@@ -40,11 +41,13 @@ export const validateConfig = (config: Ad402Config): Ad402Error[] => {
 
   if (!config.walletAddress) {
     errors.push({
+      type: 'UNKNOWN_ERROR',
       code: 'MISSING_WALLET_ADDRESS',
       message: 'walletAddress is required'
     });
   } else if (!isValidWalletAddress(config.walletAddress)) {
     errors.push({
+      type: 'UNKNOWN_ERROR',
       code: 'INVALID_WALLET_ADDRESS',
       message: 'walletAddress must be a valid Ethereum address (0x...)'
     });
@@ -52,6 +55,7 @@ export const validateConfig = (config: Ad402Config): Ad402Error[] => {
 
   if (config.apiBaseUrl && !isValidUrl(config.apiBaseUrl)) {
     errors.push({
+      type: 'UNKNOWN_ERROR',
       code: 'INVALID_API_URL',
       message: 'apiBaseUrl must be a valid URL'
     });
@@ -59,6 +63,7 @@ export const validateConfig = (config: Ad402Config): Ad402Error[] => {
 
   if (config.theme?.primaryColor && !isValidColor(config.theme.primaryColor)) {
     errors.push({
+      type: 'UNKNOWN_ERROR',
       code: 'INVALID_PRIMARY_COLOR',
       message: 'primaryColor must be a valid hex color'
     });
@@ -99,11 +104,11 @@ export const isValidWalletAddress = (address: string): boolean => {
 export const formatPrice = (price: string, currency: string = 'USDC'): string => {
   const numPrice = parseFloat(price);
   if (isNaN(numPrice)) return price;
-  
+
   if (numPrice < 0.01) {
     return `${price} ${currency}`;
   }
-  
+
   return `${numPrice.toFixed(2)} ${currency}`;
 };
 
@@ -113,13 +118,13 @@ export const formatPrice = (price: string, currency: string = 'USDC'): string =>
 export const formatTimeRemaining = (expiresAt: number): string => {
   const now = Date.now();
   const remaining = expiresAt - now;
-  
+
   if (remaining <= 0) return 'Expired';
-  
+
   const minutes = Math.floor(remaining / (1000 * 60));
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
-  
+
   if (days > 0) return `${days}d ${hours % 24}h`;
   if (hours > 0) return `${hours}h ${minutes % 60}m`;
   return `${minutes}m`;
@@ -145,7 +150,7 @@ export const generateCheckoutUrl = (
     walletAddress,
     ...additionalParams
   });
-  
+
   return `${apiBaseUrl}/checkout?${params.toString()}`;
 };
 
@@ -169,7 +174,7 @@ export const generateUploadUrl = (
     walletAddress,
     ...additionalParams
   });
-  
+
   return `${apiBaseUrl}/upload?${params.toString()}`;
 };
 
@@ -181,11 +186,11 @@ export const fetchAdData = async (
   apiBaseUrl: string = 'https://ad402.io'
 ): Promise<AdData> => {
   const response = await fetch(`${apiBaseUrl}/api/ads/${slotId}`);
-  
+
   if (!response.ok) {
     throw new Error(`Failed to fetch ad data: ${response.status}`);
   }
-  
+
   return response.json();
 };
 
@@ -197,11 +202,11 @@ export const fetchQueueInfo = async (
   apiBaseUrl: string = 'https://ad402.io'
 ): Promise<QueueInfo> => {
   const response = await fetch(`${apiBaseUrl}/api/queue-info/${slotId}`);
-  
+
   if (!response.ok) {
     throw new Error(`Failed to fetch queue info: ${response.status}`);
   }
-  
+
   return response.json();
 };
 
@@ -229,18 +234,18 @@ export const generateSlotId = (prefix: string = 'slot'): string => {
  */
 export const parseSlotConfigFromUrl = (): Partial<Ad402Config> => {
   if (typeof window === 'undefined') return {};
-  
+
   const params = new URLSearchParams(window.location.search);
   const config: Partial<Ad402Config> = {};
-  
+
   if (params.get('websiteId')) {
     config.websiteId = params.get('websiteId')!;
   }
-  
+
   if (params.get('apiBaseUrl')) {
     config.apiBaseUrl = params.get('apiBaseUrl')!;
   }
-  
+
   return config;
 };
 
@@ -254,7 +259,7 @@ export const trackAdEvent = (
   additionalData?: Record<string, any>
 ): void => {
   if (typeof window === 'undefined') return;
-  
+
   // Send to analytics endpoint
   fetch('https://ad402.io/api/analytics', {
     method: 'POST',
@@ -273,4 +278,85 @@ export const trackAdEvent = (
   }).catch(error => {
     console.warn('Failed to track ad event:', error);
   });
+};
+
+/**
+ * Execute an async function with exponential backoff retries.
+ */
+export const retryAsync = async <T>(
+  fn: () => Promise<T>,
+  options?: {
+    retries?: number;
+    delay?: number;
+    factor?: number;
+    retryOn?: (error: any) => boolean;
+    signal?: AbortSignal;
+  }
+): Promise<T> => {
+  const {
+    retries = 3,
+    delay = 500,
+    factor = 2,
+    retryOn = (error: any) => {
+      // Don't retry if aborted
+      if (error?.name === 'AbortError') return false;
+
+      // Stop on 4xx client errors, retry on 5xx or network errors
+      if (error && error.status && typeof error.status === 'number') {
+        if (error.status >= 400 && error.status < 500) {
+          return false;
+        }
+      }
+      return true;
+    },
+    signal,
+  } = options || {};
+
+  let currentAttempt = 0;
+  let currentDelay = delay;
+
+  while (currentAttempt <= retries) {
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
+    try {
+      return await fn();
+    } catch (error) {
+      if (currentAttempt === retries || !retryOn(error)) {
+        throw error;
+      }
+
+      currentAttempt++;
+
+      // Wait for currentDelay, but listen to abort signal
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          cleanup();
+          resolve();
+        }, currentDelay);
+
+        const onAbort = () => {
+          clearTimeout(timeout);
+          cleanup();
+          reject(new DOMException('Aborted', 'AbortError'));
+        };
+
+        const cleanup = () => {
+          if (signal) {
+            signal.removeEventListener('abort', onAbort);
+          }
+        };
+
+        if (signal) {
+          signal.addEventListener('abort', onAbort);
+        }
+      });
+
+      // Exponentially increase delay
+      currentDelay *= factor;
+    }
+  }
+
+  throw new Error('Unreachable: retry loop terminated unexpectedly');
 };
