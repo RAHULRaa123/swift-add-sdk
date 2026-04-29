@@ -448,3 +448,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 ---
 
 **Ad402 SDK** - Making decentralized advertising simple and powerful! 🚀
+## Improvements
+
+- Improved documentation clarity
+- Added better explanation for SDK usage and integration
